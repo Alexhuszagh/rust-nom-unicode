@@ -1,206 +1,850 @@
 //! Adaptors to add Unicode-aware parsing to Nom.
 
-#![allow(unused)]
-
-use std::char as stdchar;
+use nom::AsChar;
 
 // HELPERS
-// -------
 
-/// Calculates the number of UTF-8 continuation bytes.
-const UTF8_BYTES: [u8; 256] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
-/// Offset to adjust codepoint back based on number of bytes.
-const UTF8_OFFSETS: [u32; 6] = [0x00000000,0x00003080,0x000E2080,0x03C82080,0xFA082080,0x82082080];
-
-/// Determine if a single character is ASCII.
-#[inline]
-fn is_ascii_byte(byte: u8) -> bool {
-    byte <= 0x7f
+/// nom::AsChar for only unicode-aware character types.
+pub trait IsChar: AsChar {
 }
 
-/// Determine if byte is a start byte.
-fn is_start_byte(byte: u8) -> bool {
-    byte > 0xbf
+impl IsChar for char {
 }
 
-/// Determine if byte is a continuation byte.
-fn is_continuation_byte(byte: u8) -> bool {
-    byte >= 0x80 && byte <= 0xbf
+impl<'a> IsChar for &'a char {
 }
 
-/// Helper to add a start byte to the result.
-macro_rules! add_start_byte {
-    ($result:ident, $byte:expr) => {
-        let byte = $byte;
-        if !is_start_byte(byte) {
-            return None
+// Generates `is_x` implied helper functions.
+macro_rules! is_impl {
+    ($($name:ident)*) => ($(
+        #[inline(always)]
+        fn $name<T: IsChar>(item: T) -> bool {
+            item.as_char().$name()
         }
-        $result += byte as u32;
-    };
-    (@shr $result:ident, $byte:expr) => {
-        add_start_byte!($result, $byte);
-        $result <<= 6;
-    };
+    )*);
 }
 
-/// Helper to add a continuation byte to the result.
-macro_rules! add_continuation_byte {
-    ($result:ident, $byte:expr) => {
-        let byte = $byte;
-        if !is_continuation_byte(byte) {
-            return None
-        }
-        $result += byte as u32;
-    };
-    (@shr $result:ident, $byte:expr) => {
-        add_continuation_byte!($result, $byte);
-        $result <<= 6;
-    };
+is_impl! {
+    is_alphabetic
+    is_lowercase
+    is_uppercase
+    is_whitespace
+    is_alphanumeric
+    is_control
+    is_numeric
+    is_ascii
 }
 
-/// Extract single Unicode character from byte slice.
-///
-/// Validates UTF-8 input, and returns None if the input
-/// is invalid.
-fn extract_character<'a>(bytes: &'a [u8])
-    -> Option<(char, &'a [u8])>
-{
-    // Need to find the number of bytes, validate the UTF-8.
-    let mut iter = bytes.iter();
-    let first = *iter.next()?;
-    let count = UTF8_BYTES[first as usize] as usize;
-
-    // Create our character
-    let code = match (count) {
-        // Valid UTF-8.
-        3 => {
-            let mut result: u32 = 0;
-            add_start_byte!(@shr result, first);
-            add_continuation_byte!(@shr result, *iter.next()?);
-            add_continuation_byte!(@shr result, *iter.next()?);
-            add_continuation_byte!(result, *iter.next()?);
-            result
-        },
-        2 => {
-            let mut result: u32 = 0;
-            add_start_byte!(@shr result, first);
-            add_continuation_byte!(@shr result, *iter.next()?);
-            add_continuation_byte!(result, *iter.next()?);
-            result
-        },
-        1 => {
-            let mut result: u32 = 0;
-            add_start_byte!(@shr result, first);
-            add_continuation_byte!(result, *iter.next()?);
-            result
-        },
-        0 => {
-            first as u32
-        }
-        // Invalid UTF-8, unapproved extensions.
-        _ => return None,
-    };
-
-    // Create character and code point.
-    unsafe {
-        let character = stdchar::from_u32_unchecked(code - UTF8_OFFSETS[count]);
-        let slc = iter.as_slice();
-        Some((character, slc))
-    }
-}
-
-// API
-
-/// Determine if a character is alphabetical.
-///
-/// Returns if the first code point is an alphabetical
-/// character and the number of bytes contributing
-/// to the code point. If the data is invalid or empty,
-/// will return None.
-#[inline]
-fn is_alphabetic<'a>(bytes: &'a [u8])
-    -> Option<(bool, &'a [u8])>
-{
-    let (c, bytes) = extract_character(bytes)?;
-    let is_alpha = c.is_alphabetic();
-    Some((is_alpha, bytes))
+// Macro to dynamically document a generated function.
+macro_rules! doc {
+    ($x:expr, $item:item) => (
+        #[doc = $x]
+        $item
+    );
 }
 
 // COMPLETE
 
+/// Nom complete parsing API functions.
 pub mod complete {
-    use super::is_alphabetic;
-    use core::ops::{Range, RangeFrom, RangeTo};
-    //use nom;
+    use super::*;
+    use nom::{IResult, InputTakeAtPosition};
+    use nom::error::{ErrorKind, ParseError};
 
-//    pub fn take_while<F, Input, Error: ParseError<Input>>(cond: F) -> impl Fn(Input) -> IResult<Input, Input, Error>
-//    where
-//      Input: InputTakeAtPosition,
-//      F: Fn(<Input as InputTakeAtPosition>::Item) -> bool,
-//    {
-//      move |i: Input| i.split_at_position_complete(|c| !cond(c))
-//    }
+    // Dynamically generate both the zero and 1 parse APIs.
+    macro_rules! parse_impl {
+        ($($name0:ident, $name1:ident, $kind:ident, $callback:ident, $comment:expr)*) => ($(
+            doc!(concat!("Recognizes zero or more ", $comment),
+                #[inline]
+                pub fn $name0<T, Error>(input: T)
+                    -> IResult<T, T, Error>
+                    where T: InputTakeAtPosition,
+                          <T as InputTakeAtPosition>::Item: IsChar,
+                          Error: ParseError<T>
+                {
+                  input.split_at_position_complete(|item| !$callback(item))
+                }
+            );
 
-    pub fn alpha<'a, Error>(input: &'a [u8]) -> nom::IResult<&'a [u8], &'a [u8], Error>
-    where
-        Error: nom::error::ParseError<&'a [u8]>
-    {
-        // Continually process bytes.
-        let mut bytes = input;
-        while (bytes.len() > 0) {
-            let result = match is_alphabetic(bytes) {
-                None => panic!(""),
-                //None => return Err(nom::internal::Err(Error::from_error_kind(input, nom::error::ErrorKind::Alpha))),
-                Some(r) => r
-            };
-            if (result.0) {
-                bytes = result.1;
-            } else {
-                break;
-            }
-        }
-
-        // Now need to split into result.
-        panic!("");
-        // TODO(ahuszagh) Here...
+            doc!(concat!("Recognizes one or more ", $comment),
+                #[inline]
+                pub fn $name1<T, Error>(input: T)
+                    -> IResult<T, T, Error>
+                    where T: InputTakeAtPosition,
+                          <T as InputTakeAtPosition>::Item: IsChar,
+                          Error: ParseError<T>
+                {
+                  input.split_at_position1_complete(|item| !$callback(item), ErrorKind::$kind)
+                }
+            );
+        )*);
     }
-    // TODO(ahuszagh) here...
+
+    parse_impl! {
+        alpha0,         alpha1,         Alpha,          is_alphabetic,      "lowercase and uppercase alphabetic Unicode characters."
+        lower0,         lower1,         Alpha,          is_lowercase,       "lowercase alphabetic Unicode characters."
+        upper0,         upper1,         Alpha,          is_uppercase,       "lowercase alphabetic Unicode characters."
+        space0,         space1,         Space,          is_whitespace,      "whitespace Unicode characters."
+        alphanumeric0,  alphanumeric1,  AlphaNumeric,   is_alphanumeric,    "alphabetic and numeric Unicode characters."
+        control0,       control1,       TakeWhile1,     is_control,         "control Unicode characters."
+        digit0,         digit1,         Digit,          is_numeric,         "numeric Unicode characters."
+        ascii0,         ascii1,         TakeWhile1,     is_ascii,           "ASCII characters."
+    }
 }
 
-// INCOMPLETE
+// STREAMING
 
-pub mod incomplete {
-    // TODO(ahuszagh) here...
+/// Nom streaming parsing API functions.
+pub mod streaming {
+    use super::*;
+    use nom::{IResult, InputTakeAtPosition};
+    use nom::error::{ErrorKind, ParseError};
+
+    // Dynamically generate both the zero and 1 parse APIs.
+    macro_rules! parse_impl {
+        ($($name0:ident, $name1:ident, $kind:ident, $callback:ident, $comment:expr)*) => ($(
+            doc!(concat!("Recognizes zero or more ", $comment),
+                #[inline]
+                pub fn $name0<T, Error>(input: T)
+                    -> IResult<T, T, Error>
+                    where T: InputTakeAtPosition,
+                          <T as InputTakeAtPosition>::Item: IsChar,
+                          Error: ParseError<T>
+                {
+                  input.split_at_position(|item| !$callback(item))
+                }
+            );
+
+            doc!(concat!("Recognizes one or more ", $comment),
+                #[inline]
+                pub fn $name1<T, Error>(input: T)
+                    -> IResult<T, T, Error>
+                    where T: InputTakeAtPosition,
+                          <T as InputTakeAtPosition>::Item: IsChar,
+                          Error: ParseError<T>
+                {
+                  input.split_at_position1(|item| !$callback(item), ErrorKind::$kind)
+                }
+            );
+        )*);
+    }
+
+    parse_impl! {
+        alpha0,         alpha1,         Alpha,          is_alphabetic,      "lowercase and uppercase alphabetic Unicode characters."
+        lower0,         lower1,         Alpha,          is_lowercase,       "lowercase alphabetic Unicode characters."
+        upper0,         upper1,         Alpha,          is_uppercase,       "lowercase alphabetic Unicode characters."
+        space0,         space1,         Space,          is_whitespace,      "whitespace Unicode characters."
+        alphanumeric0,  alphanumeric1,  AlphaNumeric,   is_alphanumeric,    "alphabetic and numeric Unicode characters."
+        control0,       control1,       TakeWhile1,     is_control,         "control Unicode characters."
+        digit0,         digit1,         Digit,          is_numeric,         "numeric Unicode characters."
+        ascii0,         ascii1,         TakeWhile1,     is_ascii,           "ASCII characters."
+    }
 }
 
-//fn take_while()
-
-//#[inline]
-//fn alpha(s: &[u8]) -> IResult<&[u8], &[u8]> {
-//  take_while(is_alphabetic)(s)
-//}
+// TESTS
+// -----
 
 #[cfg(test)]
 mod tests {
+    use nom::{IResult, InputTakeAtPosition, AsChar};
+    use nom::error::ErrorKind;
+    use nom::Err::{Error, Incomplete};
+    use nom::Needed::Size;
     use super::*;
 
-    /// Wrap data for simplified testing.
-    fn wrap<'a, F>(input: &'a [u8], f: F)
-        -> Option<(bool, usize)>
-        where F: Fn(&'a [u8]) -> Option<(bool, &'a [u8])>
+    /// Call data for simplified testing (removes the error parameter).
+    fn call<T, F>(f: F, input: T)
+        -> IResult<T, T>
+        where T: InputTakeAtPosition,
+              <T as InputTakeAtPosition>::Item: AsChar,
+              F: Fn(T) -> IResult<T, T>
     {
-        let result = f(input)?;
-        Some((result.0, input.len() - result.1.len()))
+        f(input)
+    }
+
+    fn run_tests<'a, F>(f: &F, tests: &[(&'a str, IResult<&'a str, &'a str>)])
+        where F: Fn(&'a str) -> IResult<&'a str, &'a str>
+    {
+        for test in tests.iter() {
+            assert_eq!(call(f, test.0), test.1);
+        }
+    }
+
+    // COMPLETE
+
+    #[test]
+    fn alpha0_complete_test() {
+        run_tests(&complete::alpha0, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Ok(("", "조선글"))),
+            ("조선글123", Ok(("123", "조선글"))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
     }
 
     #[test]
-    fn is_alphabetic_test() {
-        // Test ASCII
-        assert_eq!('a'.is_alphabetic(), true);
-        assert_eq!(wrap(b"a", is_alphabetic), Some((true, 1)));
+    fn alpha1_complete_test() {
+        run_tests(&complete::alpha1, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Ok(("", "조선글"))),
+            ("조선글123", Ok(("123", "조선글"))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Error(("", ErrorKind::Alpha))))
+        ]);
+    }
 
-        // Test Hangul.
-        assert_eq!('조'.is_alphabetic(), true);
-        assert_eq!(wrap("조".as_bytes(), is_alphabetic), Some((true, 3)));
+    #[test]
+    fn lower0_complete_test() {
+        run_tests(&complete::lower0, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn lower1_complete_test() {
+        run_tests(&complete::lower1, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Alpha)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Alpha)))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Alpha)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Alpha)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Error(("", ErrorKind::Alpha))))
+        ]);
+    }
+
+    #[test]
+    fn upper0_complete_test() {
+        run_tests(&complete::upper0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn upper1_complete_test() {
+        run_tests(&complete::upper1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Alpha)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Alpha)))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Alpha)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Alpha)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Alpha)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Alpha)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Error(("", ErrorKind::Alpha))))
+        ]);
+    }
+
+    #[test]
+    fn space0_complete_test() {
+        run_tests(&complete::space0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok(("\x08", " \t\n"))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{200b}", "\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}"))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn space1_complete_test() {
+        run_tests(&complete::space1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Space)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Space)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Space)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Space)))),
+            ("123", Err(Error(("123", ErrorKind::Space)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Space)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Space)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Space)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Space)))),
+            (" \t\n\x08", Ok(("\x08", " \t\n"))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Space)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{200b}", "\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}"))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Space)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Space)))),
+            ("", Err(Error(("", ErrorKind::Space))))
+        ]);
+    }
+
+    #[test]
+    fn alphanumeric0_complete_test() {
+        run_tests(&complete::alphanumeric0, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("", "latin123"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("", "LATIN123"))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("", "erfüllen123"))),
+            ("조선글", Ok(("", "조선글"))),
+            ("조선글123", Ok(("", "조선글123"))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn alphanumeric1_complete_test() {
+        run_tests(&complete::alphanumeric1, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("", "latin123"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("", "LATIN123"))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Ok(("", "erfüllen"))),
+            ("erfüllen123", Ok(("", "erfüllen123"))),
+            ("조선글", Ok(("", "조선글"))),
+            ("조선글123", Ok(("", "조선글123"))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::AlphaNumeric)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::AlphaNumeric)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::AlphaNumeric)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::AlphaNumeric)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::AlphaNumeric)))),
+            ("", Err(Error(("", ErrorKind::AlphaNumeric))))
+        ]);
+    }
+
+    #[test]
+    fn control0_complete_test() {
+        run_tests(&complete::control0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("", "\x00\x01\x02\u{80}"))),
+            ("\u{94}\u{100}", Ok(("\u{100}", "\u{94}"))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn control1_complete_test() {
+        run_tests(&complete::control1, &[
+            ("latin", Err(Error(("latin", ErrorKind::TakeWhile1)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::TakeWhile1)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::TakeWhile1)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::TakeWhile1)))),
+            ("123", Err(Error(("123", ErrorKind::TakeWhile1)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::TakeWhile1)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::TakeWhile1)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::TakeWhile1)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::TakeWhile1)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::TakeWhile1)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\x00\x01\x02\u{80}", Ok(("", "\x00\x01\x02\u{80}"))),
+            ("\u{94}\u{100}", Ok(("\u{100}", "\u{94}"))),
+            ("", Err(Error(("", ErrorKind::TakeWhile1))))
+        ]);
+    }
+
+    #[test]
+    fn digit0_complete_test() {
+        run_tests(&complete::digit0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn digit1_complete_test() {
+        run_tests(&complete::digit1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Digit)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Digit)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Digit)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Digit)))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Digit)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Digit)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Digit)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Digit)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Digit)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Digit)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Digit)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Digit)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Digit)))),
+            ("", Err(Error(("", ErrorKind::Digit))))
+        ]);
+    }
+
+    #[test]
+    fn ascii0_complete_test() {
+        run_tests(&complete::ascii0, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("", "latin123"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("", "LATIN123"))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Ok(("üllen", "erf"))),
+            ("erfüllen123", Ok(("üllen123", "erf"))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok(("", " \t\n\x08"))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\u{80}", "\x00\x01\x02"))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Ok(("", "")))
+        ]);
+    }
+
+    #[test]
+    fn ascii1_complete_test() {
+        run_tests(&complete::ascii1, &[
+            ("latin", Ok(("", "latin"))),
+            ("latin123", Ok(("", "latin123"))),
+            ("LATIN", Ok(("", "LATIN"))),
+            ("LATIN123", Ok(("", "LATIN123"))),
+            ("123", Ok(("", "123"))),
+            ("erfüllen", Ok(("üllen", "erf"))),
+            ("erfüllen123", Ok(("üllen123", "erf"))),
+            ("조선글", Err(Error(("조선글", ErrorKind::TakeWhile1)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::TakeWhile1)))),
+            (" \t\n\x08", Ok(("", " \t\n\x08"))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\x00\x01\x02\u{80}", Ok(("\u{80}", "\x00\x01\x02"))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::TakeWhile1)))),
+            ("", Err(Error(("", ErrorKind::TakeWhile1))))
+        ]);
+    }
+
+    // STREAMING
+
+    #[test]
+    fn alpha0_streaming_test() {
+        run_tests(&streaming::alpha0, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Err(Incomplete(Size(1)))),
+            ("조선글123", Ok(("123", "조선글"))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn alpha1_streaming_test() {
+        run_tests(&streaming::alpha1, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Err(Incomplete(Size(1)))),
+            ("조선글123", Ok(("123", "조선글"))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Incomplete(Size(1))))
+
+        ]);
+    }
+
+    #[test]
+    fn lower0_streaming_test() {
+        run_tests(&streaming::lower0, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn lower1_streaming_test() {
+        run_tests(&streaming::lower1, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Ok(("123", "latin"))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Alpha)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Alpha)))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Ok(("123", "erfüllen"))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Alpha)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Alpha)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn upper0_streaming_test() {
+        run_tests(&streaming::upper0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn upper1_streaming_test() {
+        run_tests(&streaming::upper1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Alpha)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Alpha)))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Ok(("123", "LATIN"))),
+            ("123", Err(Error(("123", ErrorKind::Alpha)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Alpha)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Alpha)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Alpha)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Alpha)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Alpha)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Alpha)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Alpha)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Alpha)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Alpha)))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn space0_streaming_test() {
+        run_tests(&streaming::space0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok(("\x08", " \t\n"))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{200b}", "\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}"))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn space1_streaming_test() {
+        run_tests(&streaming::space1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Space)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Space)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Space)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Space)))),
+            ("123", Err(Error(("123", ErrorKind::Space)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Space)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Space)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Space)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Space)))),
+            (" \t\n\x08", Ok(("\x08", " \t\n"))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Space)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{200b}", "\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}"))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Space)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Space)))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn alphanumeric0_streaming_test() {
+        run_tests(&streaming::alphanumeric0, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Err(Incomplete(Size(1)))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Err(Incomplete(Size(1)))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Err(Incomplete(Size(1)))),
+            ("조선글", Err(Incomplete(Size(1)))),
+            ("조선글123", Err(Incomplete(Size(1)))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn alphanumeric1_streaming_test() {
+        run_tests(&streaming::alphanumeric1, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Err(Incomplete(Size(1)))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Err(Incomplete(Size(1)))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Err(Incomplete(Size(1)))),
+            ("erfüllen123", Err(Incomplete(Size(1)))),
+            ("조선글", Err(Incomplete(Size(1)))),
+            ("조선글123", Err(Incomplete(Size(1)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::AlphaNumeric)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::AlphaNumeric)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::AlphaNumeric)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::AlphaNumeric)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::AlphaNumeric)))),
+            ("", Err(Incomplete(Size(1))))
+
+        ]);
+    }
+
+    #[test]
+    fn control0_streaming_test() {
+        run_tests(&streaming::control0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Ok(("123", ""))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Err(Incomplete(Size(1)))),
+            ("\u{94}\u{100}", Ok(("\u{100}", "\u{94}"))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn control1_streaming_test() {
+        run_tests(&streaming::control1, &[
+            ("latin", Err(Error(("latin", ErrorKind::TakeWhile1)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::TakeWhile1)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::TakeWhile1)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::TakeWhile1)))),
+            ("123", Err(Error(("123", ErrorKind::TakeWhile1)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::TakeWhile1)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::TakeWhile1)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::TakeWhile1)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::TakeWhile1)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::TakeWhile1)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\x00\x01\x02\u{80}", Err(Incomplete(Size(1)))),
+            ("\u{94}\u{100}", Ok(("\u{100}", "\u{94}"))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn digit0_streaming_test() {
+        run_tests(&streaming::digit0, &[
+            ("latin", Ok(("latin", ""))),
+            ("latin123", Ok(("latin123", ""))),
+            ("LATIN", Ok(("LATIN", ""))),
+            ("LATIN123", Ok(("LATIN123", ""))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Ok(("erfüllen", ""))),
+            ("erfüllen123", Ok(("erfüllen123", ""))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Ok((" \t\n\x08", ""))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\x00\x01\x02\u{80}", ""))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn digit1_streaming_test() {
+        run_tests(&streaming::digit1, &[
+            ("latin", Err(Error(("latin", ErrorKind::Digit)))),
+            ("latin123", Err(Error(("latin123", ErrorKind::Digit)))),
+            ("LATIN", Err(Error(("LATIN", ErrorKind::Digit)))),
+            ("LATIN123", Err(Error(("LATIN123", ErrorKind::Digit)))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Err(Error(("erfüllen", ErrorKind::Digit)))),
+            ("erfüllen123", Err(Error(("erfüllen123", ErrorKind::Digit)))),
+            ("조선글", Err(Error(("조선글", ErrorKind::Digit)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::Digit)))),
+            (" \t\n\x08", Err(Error((" \t\n\x08", ErrorKind::Digit)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::Digit)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::Digit)))),
+            ("\x00\x01\x02\u{80}", Err(Error(("\x00\x01\x02\u{80}", ErrorKind::Digit)))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::Digit)))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn ascii0_streaming_test() {
+        run_tests(&streaming::ascii0, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Err(Incomplete(Size(1)))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Err(Incomplete(Size(1)))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Ok(("üllen", "erf"))),
+            ("erfüllen123", Ok(("üllen123", "erf"))),
+            ("조선글", Ok(("조선글", ""))),
+            ("조선글123", Ok(("조선글123", ""))),
+            (" \t\n\x08", Err(Incomplete(Size(1)))),
+            ("\u{200b}", Ok(("\u{200b}", ""))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Ok(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ""))),
+            ("\x00\x01\x02\u{80}", Ok(("\u{80}", "\x00\x01\x02"))),
+            ("\u{94}\u{100}", Ok(("\u{94}\u{100}", ""))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
+    }
+
+    #[test]
+    fn ascii1_streaming_test() {
+        run_tests(&streaming::ascii1, &[
+            ("latin", Err(Incomplete(Size(1)))),
+            ("latin123", Err(Incomplete(Size(1)))),
+            ("LATIN", Err(Incomplete(Size(1)))),
+            ("LATIN123", Err(Incomplete(Size(1)))),
+            ("123", Err(Incomplete(Size(1)))),
+            ("erfüllen", Ok(("üllen", "erf"))),
+            ("erfüllen123", Ok(("üllen123", "erf"))),
+            ("조선글", Err(Error(("조선글", ErrorKind::TakeWhile1)))),
+            ("조선글123", Err(Error(("조선글123", ErrorKind::TakeWhile1)))),
+            (" \t\n\x08", Err(Incomplete(Size(1)))),
+            ("\u{200b}", Err(Error(("\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", Err(Error(("\u{1680}\u{200a}\u{2028}\u{202f}\u{205f}\u{3000}\u{200b}", ErrorKind::TakeWhile1)))),
+            ("\x00\x01\x02\u{80}", Ok(("\u{80}", "\x00\x01\x02"))),
+            ("\u{94}\u{100}", Err(Error(("\u{94}\u{100}", ErrorKind::TakeWhile1)))),
+            ("", Err(Incomplete(Size(1))))
+        ]);
     }
 }

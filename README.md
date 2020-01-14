@@ -41,7 +41,7 @@ fn main() {
 
 # License
 
-Lexical is dual licensed under the Apache 2.0 license as well as the MIT license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses. 
+Nom-Unicode is dual licensed under the Apache 2.0 license as well as the MIT license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses. 
 
 # Contributing
 

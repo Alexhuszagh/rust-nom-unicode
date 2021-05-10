@@ -19,7 +19,7 @@ Add nom-unicode to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nom-unicode = "^0.1"
+nom-unicode = "^0.2"
 ```
 
 And get started using nom-unicode:

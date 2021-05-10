@@ -18,7 +18,7 @@ impl<'a> IsChar for &'a char {
 macro_rules! is_impl {
     ($($name:ident)*) => ($(
         #[inline(always)]
-        fn $name<T: IsChar>(item: T) -> bool {
+        pub fn $name<T: IsChar>(item: T) -> bool {
             item.as_char().$name()
         }
     )*);

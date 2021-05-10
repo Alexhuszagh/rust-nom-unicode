@@ -39,9 +39,13 @@ fn main() {
 }
 ```
 
+# Minimum Standard Required Version
+
+The minimum, standard, required version for nom-unicode will be the same as nom. As of nom-6, it is currently 1.43.0.
+
 # License
 
-Nom-Unicode is dual licensed under the Apache 2.0 license as well as the MIT license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses. 
+Nom-Unicode is dual licensed under the Apache 2.0 license as well as the MIT license. See the LICENCE-MIT and the LICENCE-APACHE files for the licenses.
 
 # Contributing
 

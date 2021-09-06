@@ -7,17 +7,15 @@ license = "MIT/Apache-2.0"
 name = "nom-unicode"
 readme = "README.md"
 repository = "https://github.com/Alexhuszagh/rust-nom-unicode"
-version = "0.2.0"
+version = "0.3.0"
 
 [badges]
 travis-ci = { repository = "Alexhuszagh/rust-nom-unicode" }
 
 [dependencies]
-nom = { version = "6.0", default-features = false }
+nom = { version = "7.0", default-features = false }
 
 [features]
 alloc = ["nom/alloc"]
 std = ["nom/std"]
-default = ["std", "lexical"]
-regexp = ["nom/regexp"]
-lexical = ["nom/lexical"]
+default = ["std"]

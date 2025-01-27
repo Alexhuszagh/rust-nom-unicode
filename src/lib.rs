@@ -48,7 +48,7 @@ macro_rules! doc {
 /// Nom complete parsing API functions.
 pub mod complete {
     use super::*;
-    use nom::{IResult, InputTakeAtPosition};
+    use nom::{IResult, Input};
     use nom::error::{ErrorKind, ParseError};
 
     // Dynamically generate both the zero and 1 parse APIs.
@@ -58,8 +58,8 @@ pub mod complete {
                 #[inline]
                 pub fn $name0<T, Error>(input: T)
                     -> IResult<T, T, Error>
-                    where T: InputTakeAtPosition,
-                          <T as InputTakeAtPosition>::Item: IsChar,
+                    where T: Input,
+                          <T as Input>::Item: IsChar,
                           Error: ParseError<T>
                 {
                   input.split_at_position_complete(|item| !$callback(item))
@@ -70,8 +70,8 @@ pub mod complete {
                 #[inline]
                 pub fn $name1<T, Error>(input: T)
                     -> IResult<T, T, Error>
-                    where T: InputTakeAtPosition,
-                          <T as InputTakeAtPosition>::Item: IsChar,
+                    where T: Input,
+                          <T as Input>::Item: IsChar,
                           Error: ParseError<T>
                 {
                   input.split_at_position1_complete(|item| !$callback(item), ErrorKind::$kind)
@@ -97,7 +97,7 @@ pub mod complete {
 /// Nom streaming parsing API functions.
 pub mod streaming {
     use super::*;
-    use nom::{IResult, InputTakeAtPosition};
+    use nom::{IResult, Input};
     use nom::error::{ErrorKind, ParseError};
 
     // Dynamically generate both the zero and 1 parse APIs.
@@ -107,8 +107,8 @@ pub mod streaming {
                 #[inline]
                 pub fn $name0<T, Error>(input: T)
                     -> IResult<T, T, Error>
-                    where T: InputTakeAtPosition,
-                          <T as InputTakeAtPosition>::Item: IsChar,
+                    where T: Input,
+                          <T as Input>::Item: IsChar,
                           Error: ParseError<T>
                 {
                   input.split_at_position(|item| !$callback(item))
@@ -119,8 +119,8 @@ pub mod streaming {
                 #[inline]
                 pub fn $name1<T, Error>(input: T)
                     -> IResult<T, T, Error>
-                    where T: InputTakeAtPosition,
-                          <T as InputTakeAtPosition>::Item: IsChar,
+                    where T: Input,
+                          <T as Input>::Item: IsChar,
                           Error: ParseError<T>
                 {
                   input.split_at_position1(|item| !$callback(item), ErrorKind::$kind)
@@ -147,7 +147,7 @@ pub mod streaming {
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
-    use nom::{IResult, InputTakeAtPosition, AsChar};
+    use nom::{IResult, Input, AsChar};
     use nom::error::Error as NError;
     use nom::error::ErrorKind;
     use nom::Err::{Error, Incomplete};
@@ -157,8 +157,8 @@ mod tests {
     /// Call data for simplified testing (removes the error parameter).
     fn call<T, F>(f: F, input: T)
         -> IResult<T, T>
-        where T: InputTakeAtPosition,
-              <T as InputTakeAtPosition>::Item: AsChar,
+        where T: Input,
+              <T as Input>::Item: AsChar,
               F: Fn(T) -> IResult<T, T>
     {
         f(input)

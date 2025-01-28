@@ -3,7 +3,7 @@ nom-unicode
 
 [![Build Status](https://api.travis-ci.org/Alexhuszagh/rust-nom-unicode.svg?branch=master)](https://travis-ci.org/Alexhuszagh/rust-nom-unicode)
 [![Latest Version](https://img.shields.io/crates/v/nom-unicode.svg)](https://crates.io/crates/nom-unicode)
-[![Rustc Version 1.31+](https://img.shields.io/badge/rustc-1.31+-lightgray.svg)](https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html)
+[![Rustc Version 1.31+](https://img.shields.io/badge/rustc-1.65+-lightgray.svg)](https://blog.rust-lang.org/2022/11/03/Rust-1.65.0.html)
 
 Unicode primitive parsing extensions for [nom](https://github.com/Geal/nom).
 
@@ -19,7 +19,7 @@ Add nom-unicode to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nom-unicode = "^0.2"
+nom-unicode = "^0.4"
 ```
 
 And get started using nom-unicode:

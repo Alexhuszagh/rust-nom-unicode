@@ -41,7 +41,7 @@ fn main() {
 
 # Minimum Standard Required Version
 
-The minimum, standard, required version for nom-unicode will be the same as nom. As of nom-6, it is currently 1.43.0.
+The minimum, standard, required version for nom-unicode will be the same as nom. As of nom-8, it is currently 1.65.0.
 
 # License
 
